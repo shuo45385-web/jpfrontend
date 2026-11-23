@@ -2083,28 +2083,109 @@ function onShotPreview(file, key) {
 const AI_EDIT_PRESETS = [
   { label: '白底图', prompt: '把背景换成纯白色,商品本身保持不变,光线自然' },
   { label: '去水印', prompt: '去掉图片上的水印、文字和 logo,其余内容保持不变' },
-  { label: '去杂物', prompt: '去掉背景里的杂物,让画面干�话用户不知道是在跑还是卡死了
+  { label: '去杂物', prompt: '去掉背景里的杂物,让画面干净整洁,商品保持不变' }
+  // 原来还有「提亮调色」「高级背景」,这两个会让模型大面积重画,出的图容易被平台内容审核拦掉,去掉了
+]
+// 出图分辨率跟着原图走,长边 1280 对商品图够清楚,比 2048 快很多
+const AI_IMAGE_EDGE = 1280
+const aiFileInput = ref()
+const aiEdit = reactive({
+  visible: false, file: null, srcUrl: '', prompt: '', loading: false, result: '',
+  // 失败原因留在弹窗里,不用一闪而过的 toast:修一张要等一两分钟,提示看不见等于白等
+  error: ''
+})
+// 被平台内容审核拦下来的,多试一次常常就过了,额外给几句话
+const aiEditModerated = computed(() => /审核/.test(aiEdit.error))
+// 修一张要一两分钟,转圈不报时的话用户不知道是在跑还是卡死了
 const aiElapsed = ref(0)
 let aiTimer = null
 const aiLoadingText = computed(() => {
   const s = aiElapsed.value
-  const clock = `${Math.floor(s /n
+  const clock = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+  if (s < 90) return `正在修图 ${clock},一般一两分钟…`
+  return `正在修图 ${clock},这张有点费劲,再等等…`
+})
+function startAiTimer() {
+  aiElapsed.value = 0
+  clearInterval(aiTimer)
+  aiTimer = setInterval(() => { aiElapsed.value += 1 }, 1000)
+}
+function stopAiTimer() {
+  clearInterval(aiTimer)
+  aiTimer = null
+}
+
+function openAiEdit() {
+  aiEdit.visible = true
+}
+
+function resetAiEdit() {
+  if (aiEdit.srcUrl) URL.revokeObjectURL(aiEdit.srcUrl)
+  Object.assign(aiEdit, { file: null, srcUrl: '', prompt: '', loading: false, result: '', error: '' })
+}
+
+async function onAiFilePick(e) {
+  const picked = e.target.files && e.target.files[0]
+  e.target.value = '' // 允许重复选同一张
+  if (!picked) return
+  if (/gif/i.test(picked.type) || /\.gif$/i.test(picked.name || '')) {
+    msg.error('AI 修图不支持 GIF,请选 JPG、PNG、WEBP 图片')
+    return
   }
   // 复用上传前的格式/大小校验和压缩;AI 修图的图压得更小,上传和出图都快不少
   const file = await beforeImageUpload(picked, AI_IMAGE_EDGE)
-  if (!file)��下想怎么修'); return }
+  if (!file) return
+  if (aiEdit.srcUrl) URL.revokeObjectURL(aiEdit.srcUrl)
+  aiEdit.file = file
+  aiEdit.srcUrl = URL.createObjectURL(file)
+  aiEdit.result = ''
+  aiEdit.error = ''
+}
+
+async function runAiEdit() {
+  if (!aiEdit.file) { msg.warning('请先选一张图片'); aiFileInput.value.click(); return }
+  if (!aiEdit.prompt.trim()) { msg.warning('请选一个修图方式,或写一下想怎么修'); return }
   aiEdit.loading = true
   aiEdit.error = ''
   startAiTimer()
   try {
     const jobId = await aiApi.imageEdit(aiEdit.file, aiEdit.prompt.trim())
-    aiEdit.r   stopAiTimer()
+    aiEdit.result = await waitAiEdit(jobId)
+    msg.success('修好了')
+  } catch (e) {
+    aiEdit.error = e.message || 'AI 修图失败,请稍后重试'
+    msg.error(aiEdit.error)
+  } finally {
+    stopAiTimer()
     aiEdit.loading = false
   }
 }
 
 // 每 1.5 秒问一次后端修好没;单次查询网络抖一下不算失败,接着问。
-// 上限要比后端 qwen.timeout-seconds(ult
+// 上限要比后端 qwen.timeout-seconds(默认 420 秒)大,不然后端还在出图、前端先放弃了,
+// 那样用户看到的是没头没脑的「等太久」,而不是后端那句具体原因
+async function waitAiEdit(jobId) {
+  const deadline = Date.now() + 8 * 60 * 1000
+  let lastError = null
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 1500))
+    let job
+    try {
+      job = await aiApi.imageEditResult(jobId)
+    } catch (e) {
+      if (/不存在或已过期/.test(e.message || '')) throw e
+      lastError = e
+      continue
+    }
+    if (job.status === 'done') return job.path
+    if (job.status === 'failed') throw new Error(job.msg || 'AI 修图失败,请稍后重试')
+  }
+  throw new Error(lastError ? lastError.message : '修图等太久了,请稍后重试')
+}
+
+// 修好的图已经存在自己的上传目录里,直接带进「记一笔」当记录图片
+async function useAiResult() {
+  const path = aiEdit.result
   aiEdit.visible = false
   await openDialog()
   fileList.value = buildFileList(path)
@@ -3314,3 +3395,4 @@ body { margin: 0; background: var(--paper); color: var(--ink);
   z-index: 2;
 }
 </style>
+

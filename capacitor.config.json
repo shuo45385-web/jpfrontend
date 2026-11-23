@@ -1,0 +1,9 @@
+{
+  "appId": "asia.jipai.app",
+  "appName": "记拍",
+  "webDir": "dist",
+  "server": {
+    "url": "https://jipai.asia",
+    "cleartext": false
+  }
+}
